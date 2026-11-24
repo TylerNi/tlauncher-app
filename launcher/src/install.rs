@@ -100,7 +100,13 @@ pub fn install(
     progress: &Progress,
 ) -> Result<Launch, String> {
     let launch = session.launch(game_id, &version.version_id, &version.platform)?;
+    let old: Option<Manifest> = previous.and_then(|p| {
+        session
+            .get(&format!("/api/v1/client/game/manifest?version={p}"))
+            .ok()
+    });
     let previous_query = previous
+        .filter(|_| old.is_some())
         .map(|p| format!("&previous={p}"))
         .unwrap_or_default();
     let manifest: Manifest = session.get(&format!(
@@ -108,9 +114,7 @@ pub fn install(
         version.version_id
     ))?;
 
-    if let Some(previous) = previous {
-        let old: Manifest =
-            session.get(&format!("/api/v1/client/game/manifest?version={previous}"))?;
+    if let Some(old) = old {
         for file in old.file_list.keys() {
             if !manifest.file_list.contains_key(file) {
                 let _ = fs::remove_file(dir.join(file));
