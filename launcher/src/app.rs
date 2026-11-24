@@ -47,6 +47,7 @@ struct State {
     root: Option<PathBuf>,
     installed: HashMap<String, Installed>,
     code: Option<String>,
+    startup: Option<bool>,
 }
 
 impl State {
@@ -93,6 +94,7 @@ enum Action {
     Play(String),
     Uninstall(String),
     Restart(PathBuf),
+    Startup(bool),
 }
 
 fn forget(s: &mut Shared) {
@@ -265,6 +267,11 @@ impl App {
             let ctx = self.ctx.clone();
             self.spawn(move |shared| load(shared, &ctx));
         }
+        let startup = self.shared.lock().unwrap().state.startup.unwrap_or(true);
+        self.spawn(move |_| {
+            os::shortcut();
+            os::autostart(startup);
+        });
         self.spawn(|shared| {
             let launcher = match update::run() {
                 Ok(Some(exe)) => Launcher::Ready(exe),
@@ -426,6 +433,12 @@ impl App {
                 }
             }
             Action::Restart(exe) => update::restart(&exe),
+            Action::Startup(on) => {
+                let mut s = self.shared.lock().unwrap();
+                s.state.startup = Some(on);
+                s.state.save();
+                os::autostart(on);
+            }
         }
     }
 }
@@ -504,6 +517,13 @@ impl egui_software_backend::App for App {
                             }
                         });
                     });
+                    let mut startup = s.state.startup.unwrap_or(true);
+                    if ui
+                        .checkbox(&mut startup, "Lancer au démarrage de l'ordinateur")
+                        .changed()
+                    {
+                        action = Some(Action::Startup(startup));
+                    }
                     ui.separator();
                     if s.games.is_empty() {
                         ui.label("Aucun jeu pour le moment.");

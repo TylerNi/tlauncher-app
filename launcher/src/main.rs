@@ -52,5 +52,16 @@ fn main() {
         .min_inner_size(Some(egui::vec2(480.0, 120.0)))
         .icon(Some(Arc::new(icon)));
     settings.viewport_builder.drag_and_drop = Some(false);
-    let _ = egui_software_backend::run_app_with_software_backend(settings, app::App::new);
+    let background = std::env::args().any(|a| a == "--background");
+    #[cfg(windows)]
+    {
+        settings.viewport_builder.visible = Some(!background);
+    }
+    let _ = egui_software_backend::run_app_with_software_backend(settings, move |ctx| {
+        #[cfg(not(windows))]
+        if background {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        app::App::new(ctx)
+    });
 }
