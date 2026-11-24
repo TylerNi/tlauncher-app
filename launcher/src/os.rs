@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[cfg(windows)]
@@ -86,15 +86,17 @@ pub fn register_link() {
 }
 
 #[cfg(windows)]
-pub fn pick_folder() -> Option<PathBuf> {
-    rfd::FileDialog::new().pick_folder()
+pub fn pick_folder(start: &Path) -> Option<PathBuf> {
+    rfd::FileDialog::new().set_directory(start).pick_folder()
 }
 
 #[cfg(not(windows))]
-pub fn pick_folder() -> Option<PathBuf> {
+pub fn pick_folder(start: &Path) -> Option<PathBuf> {
+    let zenity = format!("--filename={}/", start.display());
+    let kdialog = start.display().to_string();
     let attempts: [&[&str]; 2] = [
-        &["zenity", "--file-selection", "--directory"],
-        &["kdialog", "--getexistingdirectory"],
+        &["zenity", "--file-selection", "--directory", &zenity],
+        &["kdialog", "--getexistingdirectory", &kdialog],
     ];
     for args in attempts {
         if let Ok(out) = Command::new(args[0]).args(&args[1..]).output() {

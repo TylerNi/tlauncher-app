@@ -30,8 +30,8 @@ fn main() {
     let settings = SoftwareBackendAppConfiguration::new()
         .title(Some("Tlauncher".into()))
         .app_id(Some("tlauncher".into()))
-        .inner_size(Some(egui::vec2(640.0, 720.0)))
-        .min_inner_size(Some(egui::vec2(480.0, 360.0)))
+        .inner_size(Some(egui::vec2(640.0, 420.0)))
+        .min_inner_size(Some(egui::vec2(480.0, 120.0)))
         .icon(Some(Arc::new(icon)));
     let _ = egui_software_backend::run_app_with_software_backend(settings, app::App::new);
 }

@@ -158,6 +158,7 @@ pub struct App {
     ctx: egui::Context,
     textures: HashMap<String, TextureHandle>,
     confirm: Option<String>,
+    height: f32,
 }
 
 impl App {
@@ -181,6 +182,7 @@ impl App {
             ctx,
             textures: HashMap::new(),
             confirm: None,
+            height: 0.0,
         };
         app.boot();
         app
@@ -230,7 +232,9 @@ impl App {
                 });
             }
             Action::Folder => self.spawn(|shared| {
-                if let Some(folder) = os::pick_folder() {
+                let start = shared.lock().unwrap().state.root();
+                let _ = fs::create_dir_all(&start);
+                if let Some(folder) = os::pick_folder(&start) {
                     let mut s = shared.lock().unwrap();
                     s.state.root = Some(folder);
                     s.state.save();
@@ -396,7 +400,8 @@ impl egui_software_backend::App for App {
                     if s.games.is_empty() {
                         ui.label("Aucun jeu pour le moment.");
                     }
-                    egui::ScrollArea::vertical().show(ui, |ui| {
+                    let top = ui.cursor().top();
+                    let list = egui::ScrollArea::vertical().show(ui, |ui| {
                         for game in &s.games {
                             ui.horizontal(|ui| {
                                 let size = vec2(54.0, 72.0);
@@ -478,6 +483,17 @@ impl egui_software_backend::App for App {
                             ui.add_space(6.0);
                         }
                     });
+                    let height = (top + list.content_size.y + 8.0)
+                        .clamp(120.0, 720.0)
+                        .round();
+                    if height != self.height {
+                        self.height = height;
+                        let width = self.ctx.viewport_rect().width();
+                        self.ctx
+                            .send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(
+                                width, height,
+                            )));
+                    }
                 }
             }
         });
