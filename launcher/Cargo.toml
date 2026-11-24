@@ -1,6 +1,6 @@
 [package]
 name = "tlauncher"
-version = "1.0.6"
+version = "1.0.7"
 edition = "2024"
 
 [dependencies]
@@ -8,6 +8,7 @@ aes = "0.9.4"
 ctr = "0.10.1"
 egui = { version = "0.34", default-features = false }
 egui_software_backend = "0.0.3"
+egui-winit = { version = "0.34", default-features = false, features = ["clipboard"] }
 epaint_default_fonts = "0.34.3"
 hex = "0.4.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
