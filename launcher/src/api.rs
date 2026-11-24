@@ -9,6 +9,7 @@ pub const SERVER: &str = "https://jeux.srvnt.ca";
 pub static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
     ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_per_read(Some(Duration::from_secs(30)))
         .build()
         .into()
 });

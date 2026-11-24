@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -54,6 +54,13 @@ impl State {
             .unwrap_or_else(|| os::data_dir().join("jeux"))
     }
 
+    fn target(&self, game: &Game) -> (PathBuf, Option<String>) {
+        match self.installed.get(&game.id) {
+            Some(i) => (i.dir.clone(), Some(i.version.clone())),
+            None => (self.root().join(&game.library_path), None),
+        }
+    }
+
     fn save(&self) {
         let _ = fs::create_dir_all(os::data_dir());
         let _ = fs::write(
@@ -69,6 +76,7 @@ struct Shared {
     games: Vec<Game>,
     latest: HashMap<String, Version>,
     jobs: HashMap<String, Arc<Progress>>,
+    resumable: HashSet<String>,
     covers: Vec<(String, ColorImage)>,
     state: State,
     launcher: Launcher,
@@ -77,6 +85,8 @@ struct Shared {
 enum Action {
     Folder,
     Install(Game),
+    Pause(String),
+    Resume(Game),
     Play(String),
     Uninstall(String),
     Restart(PathBuf),
@@ -103,6 +113,13 @@ fn load(shared: &Mutex<Shared>, ctx: &egui::Context) {
                     .collect();
             }
         }
+        let resumable = s
+            .games
+            .iter()
+            .filter(|g| s.state.target(g).0.join(".tlauncher").is_file())
+            .map(|g| g.id.clone())
+            .collect();
+        s.resumable = resumable;
         s.screen = Screen::Ready;
         s.state.installed.keys().cloned().collect()
     };
@@ -186,6 +203,7 @@ impl App {
                 games: Vec::new(),
                 latest: HashMap::new(),
                 jobs: HashMap::new(),
+                resumable: HashSet::new(),
                 covers: Vec::new(),
                 state,
                 launcher: Launcher::Unknown,
@@ -249,16 +267,10 @@ impl App {
                     }
                 });
                 self.spawn(move |shared| {
+                    let (dir, previous) = shared.lock().unwrap().state.target(&game);
                     let result = (|| -> Result<(Installed, Version), String> {
                         let version = api::latest(&game.id)?
                             .ok_or("Aucune version disponible pour ce jeu")?;
-                        let (dir, previous) = {
-                            let s = shared.lock().unwrap();
-                            match s.state.installed.get(&game.id) {
-                                Some(i) => (i.dir.clone(), Some(i.version.clone())),
-                                None => (s.state.root().join(&game.library_path), None),
-                            }
-                        };
                         let launch = install::install(
                             &game.id,
                             &version,
@@ -270,7 +282,7 @@ impl App {
                             name: game.m_name.clone(),
                             version: version.version_id.clone(),
                             platform: version.platform.clone(),
-                            dir,
+                            dir: dir.clone(),
                             command: launch.command,
                             umu: launch.umu_id_override,
                         };
@@ -278,6 +290,11 @@ impl App {
                     })();
                     let mut s = shared.lock().unwrap();
                     s.jobs.remove(&game.id);
+                    if dir.join(".tlauncher").is_file() {
+                        s.resumable.insert(game.id.clone());
+                    } else {
+                        s.resumable.remove(&game.id);
+                    }
                     match result {
                         Ok((installed, version)) => {
                             s.state.installed.insert(game.id.clone(), installed);
@@ -287,6 +304,18 @@ impl App {
                         Err(e) => s.error = Some(e),
                     }
                 });
+            }
+            Action::Pause(id) => {
+                if let Some(progress) = self.shared.lock().unwrap().jobs.get(&id) {
+                    progress.paused.store(true, Ordering::Relaxed);
+                }
+            }
+            Action::Resume(game) => {
+                let running = self.shared.lock().unwrap().jobs.get(&game.id).cloned();
+                match running {
+                    Some(progress) => progress.paused.store(false, Ordering::Relaxed),
+                    None => self.act(Action::Install(game)),
+                }
             }
             Action::Play(id) => {
                 let installed = {
@@ -316,6 +345,7 @@ impl App {
                 let installed = {
                     let mut s = self.shared.lock().unwrap();
                     s.latest.remove(&id);
+                    s.resumable.remove(&id);
                     let installed = s.state.installed.remove(&id);
                     s.state.save();
                     installed
@@ -421,18 +451,29 @@ impl egui_software_backend::App for App {
                                 });
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if let Some(progress) = s.jobs.get(&game.id) {
+                                        let paused = progress.paused.load(Ordering::Relaxed);
+                                        if paused {
+                                            if ui.add(button("Reprendre", BLUE)).clicked() {
+                                                action = Some(Action::Resume(game.clone()));
+                                            }
+                                        } else if ui.button("Pause").clicked() {
+                                            action = Some(Action::Pause(game.id.clone()));
+                                        }
                                         let done = progress.done.load(Ordering::Relaxed) as f32;
                                         let total = progress.total.load(Ordering::Relaxed) as f32;
+                                        let percent = if total == 0.0 {
+                                            0.0
+                                        } else {
+                                            done / total * 100.0
+                                        };
                                         let text = if total == 0.0 {
                                             "Préparation…".to_string()
+                                        } else if paused {
+                                            format!("En pause · {percent:.0} %")
+                                        } else if progress.offline.load(Ordering::Relaxed) {
+                                            format!("Connexion perdue · {percent:.0} %")
                                         } else {
-                                            let speed = done
-                                                / progress.start.elapsed().as_secs_f32()
-                                                / 1_000_000.0;
-                                            format!(
-                                                "{:.0} % · {speed:.1} Mo/s",
-                                                done / total * 100.0
-                                            )
+                                            format!("{percent:.0} % · {:.1} Mo/s", progress.speed())
                                         };
                                         let fraction =
                                             if total == 0.0 { 0.0 } else { done / total };
@@ -442,7 +483,12 @@ impl egui_software_backend::App for App {
                                                 .text(text),
                                         );
                                     } else if installed.is_none() {
-                                        if ui.add(button("Installer", BLUE)).clicked() {
+                                        let label = if s.resumable.contains(&game.id) {
+                                            "Reprendre"
+                                        } else {
+                                            "Installer"
+                                        };
+                                        if ui.add(button(label, BLUE)).clicked() {
                                             action = Some(Action::Install(game.clone()));
                                         }
                                     } else if self.confirm.as_ref() == Some(&game.id) {
@@ -456,8 +502,14 @@ impl egui_software_backend::App for App {
                                         if ui.button("Désinstaller").clicked() {
                                             self.confirm = Some(game.id.clone());
                                         }
+                                        let resume = s.resumable.contains(&game.id);
+                                        let label = if resume {
+                                            "Reprendre"
+                                        } else {
+                                            "Mettre à jour"
+                                        };
                                         if ui
-                                            .add_enabled(update, button("Mettre à jour", BLUE))
+                                            .add_enabled(update || resume, button(label, BLUE))
                                             .clicked()
                                         {
                                             action = Some(Action::Install(game.clone()));
