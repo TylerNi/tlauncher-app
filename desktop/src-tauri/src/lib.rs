@@ -285,8 +285,22 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimize"]),
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
+
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri_plugin_updater::UpdaterExt;
+                let Ok(updater) = update_handle.updater() else {
+                    return;
+                };
+                if let Ok(Some(update)) = updater.check().await {
+                    if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
+                        update_handle.restart();
+                    }
+                }
+            });
 
             tauri::async_runtime::block_on(async move {
                 let state = setup(handle.clone()).await;
@@ -311,7 +325,7 @@ pub fn run() {
                 let height = 864.0;
 
                 let main_window = WindowBuilder::new(&handle, "main")
-                    .title("Drop Desktop App")
+                    .title("Tlauncher")
                     .min_inner_size(1000.0, 500.0)
                     .inner_size(width, height)
                     .decorations(false)

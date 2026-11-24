@@ -89,6 +89,7 @@ tauri-plugin-dialog = "*"
 tauri-plugin-opener = "*"
 tauri-plugin-os = "*"
 tauri-plugin-shell = "*"
+tauri-plugin-updater = "2"
 tempfile = "3.19.1"
 throttle_my_fn = "0.2.6"
 tokio-util = { version = "0.7.16", features = ["io"] }

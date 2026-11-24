@@ -11,22 +11,37 @@
       >
         Let's get you set up
       </h1>
-      <p class="mt-6 text-lg leading-8 text-zinc-400">
-        You'll need to have set up a Drop instance and created an account on it. If you're connecting to another person's instance, you'll need the url and an account.
-      </p>
       <div class="mt-10 flex items-center justify-center gap-x-6">
-        <NuxtLink
-          href="/setup/server"
-          class="rounded-md bg-blue-600 px-3.5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
-          >Get started -></NuxtLink
-        >
+        <LoadingButton :loading="loading" @click="connect">
+          Get started ->
+        </LoadingButton>
       </div>
+      <p v-if="error" class="mt-6 text-sm text-red-600">{{ error }}</p>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { invoke } from "@tauri-apps/api/core";
+
 definePageMeta({
   layout: "mini",
 });
+
+const loading = ref(false);
+const error = ref(undefined);
+const router = useRouter();
+
+async function connect() {
+  loading.value = true;
+  error.value = undefined;
+  try {
+    await invoke("use_remote", { url: "https://tlauncher.srvnt.ca" });
+    router.push("/auth");
+  } catch (e) {
+    error.value = e;
+  } finally {
+    loading.value = false;
+  }
+}
 </script>
