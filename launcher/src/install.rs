@@ -12,7 +12,7 @@ use aes::cipher::{KeyIvInit, StreamCipher};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::api::{Error, Launch, Session, Version};
+use crate::api::{self, Launch, Version};
 use crate::os;
 
 type Aes128Ctr64LE = ctr::Ctr64LE<aes::Aes128>;
@@ -92,24 +92,20 @@ fn io(e: std::io::Error) -> String {
 }
 
 pub fn install(
-    session: &Session,
     game_id: &str,
     version: &Version,
     dir: &Path,
     previous: Option<&str>,
     progress: &Progress,
 ) -> Result<Launch, String> {
-    let launch = session.launch(game_id, &version.version_id, &version.platform)?;
-    let old: Option<Manifest> = previous.and_then(|p| {
-        session
-            .get(&format!("/api/v1/client/game/manifest?version={p}"))
-            .ok()
-    });
+    let launch = api::launch(game_id, &version.version_id, &version.platform)?;
+    let old: Option<Manifest> =
+        previous.and_then(|p| api::get(&format!("/api/v1/client/game/manifest?version={p}")).ok());
     let previous_query = previous
         .filter(|_| old.is_some())
         .map(|p| format!("&previous={p}"))
         .unwrap_or_default();
-    let manifest: Manifest = session.get(&format!(
+    let manifest: Manifest = api::get(&format!(
         "/api/v1/client/game/manifest?version={}{previous_query}",
         version.version_id
     ))?;
@@ -170,7 +166,7 @@ pub fn install(
         handle.set_len(size).map_err(io)?;
     }
 
-    let depots: Vec<Depot> = session.get("/api/v1/client/depots")?;
+    let depots: Vec<Depot> = api::get("/api/v1/client/depots")?;
     let depot = depots.first().ok_or("Aucun dépôt sur le serveur")?;
     let depot = format!("{}/", depot.endpoint.trim_end_matches('/'));
 
@@ -188,7 +184,6 @@ pub fn install(
                     loop {
                         let mut read = 0;
                         match download(
-                            session,
                             &depot,
                             game_id,
                             job,
@@ -222,9 +217,7 @@ pub fn install(
     Ok(launch)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn download(
-    session: &Session,
     depot: &str,
     game_id: &str,
     job: &Job,
@@ -233,12 +226,10 @@ fn download(
     progress: &Progress,
     read: &mut u64,
 ) -> Result<(), String> {
-    let mut response = session
-        .open(&format!(
-            "{depot}content/{game_id}/{}/{}",
-            job.version, job.id
-        ))
-        .map_err(String::from)?;
+    let mut response = api::open(&format!(
+        "{depot}content/{game_id}/{}/{}",
+        job.version, job.id
+    ))?;
     let mut reader = response.body_mut().as_reader();
     let mut cipher = Aes128Ctr64LE::new(&(*job.key).into(), &job.chunk.iv.into());
     let mut hasher = Sha256::new();
@@ -370,12 +361,8 @@ pub fn play(game_id: &str, installed: &Installed) -> Result<(), String> {
     Ok(())
 }
 
-pub fn refresh_launch(
-    session: &Session,
-    game_id: &str,
-    installed: &mut Installed,
-) -> Result<(), Error> {
-    let detail: crate::api::VersionDetail = session.get(&format!(
+pub fn refresh_launch(game_id: &str, installed: &mut Installed) -> Result<(), String> {
+    let detail: api::VersionDetail = api::get(&format!(
         "/api/v1/client/game/{game_id}/version/{}",
         installed.version
     ))?;

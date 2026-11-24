@@ -19,10 +19,6 @@ fn main() {
         os::folder_dialog(std::path::Path::new(&start));
         return;
     }
-    if let Some(link) = std::env::args().find(|a| a.starts_with("drop://")) {
-        let _ = api::handshake(&link);
-        return;
-    }
     let _ = std::fs::create_dir_all(os::data_dir());
     let lock = std::fs::OpenOptions::new()
         .write(true)
@@ -32,14 +28,15 @@ fn main() {
     if let Ok(lock) = &lock
         && let Err(std::fs::TryLockError::WouldBlock) = lock.try_lock()
     {
-        #[cfg(windows)]
-        os::focus_window();
-        return;
+        if std::env::args().any(|a| a == "--restart") {
+            let _ = lock.lock();
+        } else {
+            #[cfg(windows)]
+            os::focus_window();
+            return;
+        }
     }
     update::cleanup();
-    std::thread::spawn(|| {
-        let _ = update::run();
-    });
     let icon = image::load_from_memory(include_bytes!("../assets/icon.png"))
         .unwrap()
         .to_rgba8();

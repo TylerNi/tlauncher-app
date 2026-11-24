@@ -9,22 +9,35 @@ use std::time::Duration;
 use egui::{Align, Color32, ColorImage, Image, Layout, ProgressBar, RichText, TextureHandle, vec2};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{self, Error, Game, Session, Version};
+use crate::api::{self, Game, Version};
 use crate::install::{self, Installed, Progress};
-use crate::os;
+use crate::{os, update};
 
 const BLUE: Color32 = Color32::from_rgb(37, 99, 235);
 const RED: Color32 = Color32::from_rgb(185, 28, 28);
+const GREEN: Color32 = Color32::from_rgb(74, 222, 128);
+const AMBER: Color32 = Color32::from_rgb(251, 191, 36);
 
 fn button(text: &str, fill: Color32) -> egui::Button<'_> {
     egui::Button::new(RichText::new(text).color(Color32::WHITE)).fill(fill)
 }
 
-#[derive(PartialEq)]
+fn status(ui: &mut egui::Ui, color: Color32, text: &str) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), egui::Sense::hover());
+        ui.painter().circle_filled(rect.center(), 4.0, color);
+        ui.colored_label(color, text);
+    });
+}
+
+enum Launcher {
+    Unknown,
+    UpToDate,
+    Ready(PathBuf),
+}
+
 enum Screen {
     Loading,
-    Login,
-    Waiting,
     Ready,
 }
 
@@ -53,39 +66,29 @@ impl State {
 struct Shared {
     screen: Screen,
     error: Option<String>,
-    session: Option<Arc<Session>>,
     games: Vec<Game>,
     latest: HashMap<String, Version>,
     jobs: HashMap<String, Arc<Progress>>,
     covers: Vec<(String, ColorImage)>,
     state: State,
+    launcher: Launcher,
 }
 
 enum Action {
-    Login,
     Folder,
     Install(Game),
     Play(String),
     Uninstall(String),
+    Restart(PathBuf),
 }
 
 fn load(shared: &Mutex<Shared>, ctx: &egui::Context) {
-    let Some(session) = Session::load() else {
-        shared.lock().unwrap().screen = Screen::Login;
-        return;
-    };
-    let session = Arc::new(session);
-    let result = session.games();
+    let result = api::games();
     let installed: Vec<String> = {
         let mut s = shared.lock().unwrap();
         match result {
             Ok(games) => s.games = games,
-            Err(Error::Unauthorized) => {
-                Session::forget();
-                s.screen = Screen::Login;
-                return;
-            }
-            Err(Error::Other(e)) => {
+            Err(e) => {
                 s.error = Some(e);
                 s.games = s
                     .state
@@ -100,14 +103,13 @@ fn load(shared: &Mutex<Shared>, ctx: &egui::Context) {
                     .collect();
             }
         }
-        s.session = Some(session.clone());
         s.screen = Screen::Ready;
         s.state.installed.keys().cloned().collect()
     };
     ctx.request_repaint();
 
     for id in installed {
-        if let Ok(Some(version)) = session.latest(&id) {
+        if let Ok(Some(version)) = api::latest(&id) {
             shared.lock().unwrap().latest.insert(id, version);
             ctx.request_repaint();
         }
@@ -129,7 +131,7 @@ fn load(shared: &Mutex<Shared>, ctx: &egui::Context) {
             Ok(bytes) => bytes,
             Err(_) => {
                 let Ok(mut response) =
-                    session.open(&format!("{}/api/v1/client/object/{object}", api::SERVER))
+                    api::open(&format!("{}/api/v1/client/object/{object}", api::SERVER))
                 else {
                     continue;
                 };
@@ -181,12 +183,12 @@ impl App {
             shared: Arc::new(Mutex::new(Shared {
                 screen: Screen::Loading,
                 error: None,
-                session: None,
                 games: Vec::new(),
                 latest: HashMap::new(),
                 jobs: HashMap::new(),
                 covers: Vec::new(),
                 state,
+                launcher: Launcher::Unknown,
             })),
             ctx,
             textures: HashMap::new(),
@@ -209,37 +211,18 @@ impl App {
     fn boot(&self) {
         let ctx = self.ctx.clone();
         self.spawn(move |shared| load(shared, &ctx));
+        self.spawn(|shared| {
+            let launcher = match update::run() {
+                Ok(Some(exe)) => Launcher::Ready(exe),
+                Ok(None) => Launcher::UpToDate,
+                Err(_) => Launcher::Unknown,
+            };
+            shared.lock().unwrap().launcher = launcher;
+        });
     }
 
     fn act(&mut self, action: Action) {
         match action {
-            Action::Login => {
-                self.shared.lock().unwrap().screen = Screen::Waiting;
-                let ctx = self.ctx.clone();
-                self.spawn(move |shared| {
-                    if let Err(e) = api::begin_login() {
-                        let mut s = shared.lock().unwrap();
-                        s.error = Some(e);
-                        s.screen = Screen::Login;
-                        return;
-                    }
-                    loop {
-                        thread::sleep(Duration::from_secs(1));
-                        let mut s = shared.lock().unwrap();
-                        if s.screen != Screen::Waiting {
-                            return;
-                        }
-                        if Session::load().is_some() {
-                            s.screen = Screen::Loading;
-                            s.error = None;
-                            drop(s);
-                            ctx.request_repaint();
-                            load(shared, &ctx);
-                            return;
-                        }
-                    }
-                });
-            }
             Action::Folder => self.spawn(|shared| {
                 let start = shared.lock().unwrap().state.root();
                 let _ = fs::create_dir_all(&start);
@@ -251,12 +234,11 @@ impl App {
             }),
             Action::Install(game) => {
                 let progress = Arc::new(Progress::new());
-                let session = {
+                {
                     let mut s = self.shared.lock().unwrap();
                     s.error = None;
                     s.jobs.insert(game.id.clone(), progress.clone());
-                    s.session.clone()
-                };
+                }
                 let shared = self.shared.clone();
                 let ctx = self.ctx.clone();
                 let id = game.id.clone();
@@ -268,9 +250,7 @@ impl App {
                 });
                 self.spawn(move |shared| {
                     let result = (|| -> Result<(Installed, Version), String> {
-                        let session = session.ok_or("Serveur injoignable")?;
-                        let version = session
-                            .latest(&game.id)?
+                        let version = api::latest(&game.id)?
                             .ok_or("Aucune version disponible pour ce jeu")?;
                         let (dir, previous) = {
                             let s = shared.lock().unwrap();
@@ -280,7 +260,6 @@ impl App {
                             }
                         };
                         let launch = install::install(
-                            &session,
                             &game.id,
                             &version,
                             &dir,
@@ -310,18 +289,16 @@ impl App {
                 });
             }
             Action::Play(id) => {
-                let (session, installed) = {
+                let installed = {
                     let mut s = self.shared.lock().unwrap();
                     s.error = None;
-                    (s.session.clone(), s.state.installed.get(&id).cloned())
+                    s.state.installed.get(&id).cloned()
                 };
                 let Some(mut installed) = installed else {
                     return;
                 };
                 self.spawn(move |shared| {
-                    if let Some(session) = session
-                        && install::refresh_launch(&session, &id, &mut installed).is_ok()
-                    {
+                    if install::refresh_launch(&id, &mut installed).is_ok() {
                         let mut s = shared.lock().unwrap();
                         if let Some(stored) = s.state.installed.get_mut(&id) {
                             stored.command = installed.command.clone();
@@ -347,6 +324,7 @@ impl App {
                     self.spawn(move |_| install::uninstall(&id, &installed));
                 }
             }
+            Action::Restart(exe) => update::restart(&exe),
         }
     }
 }
@@ -372,29 +350,14 @@ impl egui_software_backend::App for App {
                 Screen::Loading => {
                     ui.centered_and_justified(|ui| ui.spinner());
                 }
-                Screen::Login | Screen::Waiting => {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() / 3.0);
-                        ui.heading(RichText::new("Tlauncher").size(32.0).strong());
-                        ui.add_space(16.0);
-                        if s.screen == Screen::Login {
-                            ui.label("Connecte-toi pour accéder aux jeux.");
-                            ui.add_space(12.0);
-                            if ui.add(button("Se connecter", BLUE)).clicked() {
-                                action = Some(Action::Login);
-                            }
-                        } else {
-                            ui.label("Termine la connexion dans ton navigateur.");
-                            ui.add_space(12.0);
-                            if ui.button("Rouvrir la page").clicked() {
-                                action = Some(Action::Login);
-                            }
-                        }
-                    });
-                }
                 Screen::Ready => {
                     ui.horizontal(|ui| {
                         ui.heading(RichText::new("Tlauncher").strong());
+                        match &s.launcher {
+                            Launcher::Ready(_) => status(ui, AMBER, "Mise à jour disponible"),
+                            Launcher::UpToDate => status(ui, GREEN, "À jour"),
+                            Launcher::Unknown => {}
+                        }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
                                 .button("Dossier des jeux")
@@ -402,6 +365,19 @@ impl egui_software_backend::App for App {
                                 .clicked()
                             {
                                 action = Some(Action::Folder);
+                            }
+                            let exe = match &s.launcher {
+                                Launcher::Ready(exe) => Some(exe.clone()),
+                                _ => None,
+                            };
+                            if ui
+                                .add_enabled(
+                                    exe.is_some() && s.jobs.is_empty(),
+                                    button("Mettre à jour", BLUE),
+                                )
+                                .clicked()
+                            {
+                                action = exe.map(Action::Restart);
                             }
                         });
                     });
@@ -435,7 +411,10 @@ impl egui_software_backend::App for App {
                                     ui.add_space(14.0);
                                     ui.label(RichText::new(&game.m_name).size(16.0).strong());
                                     if update {
-                                        ui.label("Mise à jour disponible");
+                                        status(ui, AMBER, "Mise à jour disponible");
+                                    } else if installed.is_some() && s.latest.contains_key(&game.id)
+                                    {
+                                        status(ui, GREEN, "À jour");
                                     } else if installed.is_some() {
                                         ui.label("Installé");
                                     }

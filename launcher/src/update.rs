@@ -1,6 +1,8 @@
 use std::env;
 use std::fs::{self, File};
 use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::Deserialize;
 
@@ -37,17 +39,17 @@ pub fn cleanup() {
     }
 }
 
-pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let release: Release = AGENT
         .get("https://api.github.com/repos/TylerNi/tlauncher-app/releases/latest")
         .call()?
         .body_mut()
         .read_json()?;
     if parse(&release.tag_name) <= parse(env!("CARGO_PKG_VERSION")) {
-        return Ok(());
+        return Ok(None);
     }
     let Some(asset) = release.assets.iter().find(|a| a.name == ASSET) else {
-        return Ok(());
+        return Ok(None);
     };
     let exe = env::current_exe()?;
     let new = exe.with_extension("new");
@@ -63,5 +65,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     fs::rename(&exe, exe.with_extension("old"))?;
     fs::rename(&new, &exe)?;
-    Ok(())
+    Ok(Some(exe))
+}
+
+pub fn restart(exe: &Path) {
+    if Command::new(exe).arg("--restart").spawn().is_ok() {
+        std::process::exit(0);
+    }
 }
