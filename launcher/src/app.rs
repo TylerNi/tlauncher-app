@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ const BLUE: Color32 = Color32::from_rgb(37, 99, 235);
 const RED: Color32 = Color32::from_rgb(185, 28, 28);
 const GREEN: Color32 = Color32::from_rgb(74, 222, 128);
 const AMBER: Color32 = Color32::from_rgb(251, 191, 36);
+const COVER_THREADS: usize = 8;
 
 fn button(text: &str, fill: Color32) -> egui::Button<'_> {
     egui::Button::new(RichText::new(text).color(Color32::WHITE)).fill(fill)
@@ -152,13 +153,6 @@ fn load(shared: &Mutex<Shared>, ctx: &egui::Context) {
     };
     ctx.request_repaint();
 
-    for id in installed {
-        if let Ok(Some(version)) = api::latest(&id) {
-            shared.lock().unwrap().latest.insert(id, version);
-            ctx.request_repaint();
-        }
-    }
-
     let covers: Vec<(String, String)> = shared
         .lock()
         .unwrap()
@@ -169,34 +163,49 @@ fn load(shared: &Mutex<Shared>, ctx: &egui::Context) {
         .collect();
     let cache = os::data_dir().join("covers");
     let _ = fs::create_dir_all(&cache);
-    for (id, object) in covers {
-        let path = cache.join(&object);
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                let Ok(mut response) =
-                    api::open(&format!("{}/api/v1/client/object/{object}", api::SERVER))
-                else {
-                    continue;
-                };
-                let Ok(bytes) = response.body_mut().read_to_vec() else {
-                    continue;
-                };
-                let _ = fs::write(&path, &bytes);
-                bytes
+    let next = AtomicUsize::new(0);
+    thread::scope(|scope| {
+        for _ in 0..COVER_THREADS {
+            scope.spawn(|| {
+                while let Some((id, object)) = covers.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let path = cache.join(object);
+                    let bytes = match fs::read(&path) {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            let Ok(mut response) = api::open(&format!(
+                                "{}/api/v1/client/object/{object}",
+                                api::SERVER
+                            )) else {
+                                continue;
+                            };
+                            let Ok(bytes) = response.body_mut().read_to_vec() else {
+                                continue;
+                            };
+                            let _ = fs::write(&path, &bytes);
+                            bytes
+                        }
+                    };
+                    let Ok(image) = image::load_from_memory(&bytes) else {
+                        continue;
+                    };
+                    let image = image.thumbnail(108, 144).to_rgba8();
+                    let image = ColorImage::from_rgba_unmultiplied(
+                        [image.width() as usize, image.height() as usize],
+                        &image,
+                    );
+                    shared.lock().unwrap().covers.push((id.clone(), image));
+                    ctx.request_repaint();
+                }
+            });
+        }
+
+        for id in installed {
+            if let Ok(Some(version)) = api::latest(&id) {
+                shared.lock().unwrap().latest.insert(id, version);
+                ctx.request_repaint();
             }
-        };
-        let Ok(image) = image::load_from_memory(&bytes) else {
-            continue;
-        };
-        let image = image.thumbnail(108, 144).to_rgba8();
-        let image = ColorImage::from_rgba_unmultiplied(
-            [image.width() as usize, image.height() as usize],
-            &image,
-        );
-        shared.lock().unwrap().covers.push((id, image));
-        ctx.request_repaint();
-    }
+        }
+    });
 }
 
 pub struct App {
