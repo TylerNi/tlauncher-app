@@ -23,6 +23,17 @@ fn main() {
         let _ = api::handshake(&link);
         return;
     }
+    let _ = std::fs::create_dir_all(os::data_dir());
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(os::data_dir().join("lock"));
+    if let Ok(lock) = &lock
+        && let Err(std::fs::TryLockError::WouldBlock) = lock.try_lock()
+    {
+        return;
+    }
     update::cleanup();
     std::thread::spawn(|| {
         let _ = update::run();
