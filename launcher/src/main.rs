@@ -11,6 +11,14 @@ use std::sync::Arc;
 use egui_software_backend::SoftwareBackendAppConfiguration;
 
 fn main() {
+    #[cfg(windows)]
+    if let Some(start) = std::env::args_os()
+        .skip_while(|a| a != "--pick-folder")
+        .nth(1)
+    {
+        os::folder_dialog(std::path::Path::new(&start));
+        return;
+    }
     if let Some(link) = std::env::args().find(|a| a.starts_with("drop://")) {
         let _ = api::handshake(&link);
         return;
@@ -27,11 +35,12 @@ fn main() {
         height: icon.height(),
         rgba: icon.into_raw(),
     };
-    let settings = SoftwareBackendAppConfiguration::new()
+    let mut settings = SoftwareBackendAppConfiguration::new()
         .title(Some("Tlauncher".into()))
         .app_id(Some("tlauncher".into()))
         .inner_size(Some(egui::vec2(640.0, 420.0)))
         .min_inner_size(Some(egui::vec2(480.0, 120.0)))
         .icon(Some(Arc::new(icon)));
+    settings.viewport_builder.drag_and_drop = Some(false);
     let _ = egui_software_backend::run_app_with_software_backend(settings, app::App::new);
 }

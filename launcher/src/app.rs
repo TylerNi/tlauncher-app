@@ -163,6 +163,15 @@ pub struct App {
 
 impl App {
     pub fn new(ctx: egui::Context) -> Self {
+        let mut fonts = egui::FontDefinitions::empty();
+        fonts.font_data.insert(
+            "Ubuntu-Light".into(),
+            Arc::new(egui::FontData::from_static(epaint_default_fonts::UBUNTU_LIGHT)),
+        );
+        for family in fonts.families.values_mut() {
+            family.push("Ubuntu-Light".into());
+        }
+        ctx.set_fonts(fonts);
         ctx.global_style_mut(|style| style.spacing.button_padding = vec2(12.0, 6.0));
         let state = fs::read(os::data_dir().join("state.json"))
             .ok()

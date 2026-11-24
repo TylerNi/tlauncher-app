@@ -87,7 +87,20 @@ pub fn register_link() {
 
 #[cfg(windows)]
 pub fn pick_folder(start: &Path) -> Option<PathBuf> {
-    rfd::FileDialog::new().set_directory(start).pick_folder()
+    let out = Command::new(env::current_exe().ok()?)
+        .arg("--pick-folder")
+        .arg(start)
+        .output()
+        .ok()?;
+    let path = String::from_utf8(out.stdout).ok()?;
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+#[cfg(windows)]
+pub fn folder_dialog(start: &Path) {
+    if let Some(folder) = rfd::FileDialog::new().set_directory(start).pick_folder() {
+        print!("{}", folder.display());
+    }
 }
 
 #[cfg(not(windows))]

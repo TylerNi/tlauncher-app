@@ -724,7 +724,6 @@ dependencies = [
  "ahash",
  "ecolor",
  "emath",
- "epaint_default_fonts",
  "font-types",
  "log",
  "nohash-hasher",
@@ -2657,13 +2656,14 @@ dependencies = [
 
 [[package]]
 name = "tlauncher"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "aes",
  "base64",
  "ctr",
  "egui",
  "egui_software_backend",
+ "epaint_default_fonts",
  "hex",
  "image",
  "p384",
