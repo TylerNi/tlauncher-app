@@ -6,7 +6,6 @@ DefaultDirName={autopf}\Tlauncher
 PrivilegesRequired=lowest
 DisableDirPage=yes
 DisableProgramGroupPage=yes
-DisableReadyPage=yes
 DisableFinishedPage=yes
 OutputDir=.
 OutputBaseFilename=TlauncherSetup
