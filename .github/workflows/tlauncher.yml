@@ -1,0 +1,53 @@
+name: Tlauncher
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            file: tlauncher.exe
+            asset: tlauncher.exe
+          - os: ubuntu-22.04
+            file: tlauncher
+            asset: tlauncher-linux
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev
+      - run: cargo build --release --locked
+      - run: mv target/release/${{ matrix.file }} ${{ matrix.asset }}
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: launcher/${{ matrix.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: |
+          version=$(grep -m1 '^version' launcher/Cargo.toml | cut -d'"' -f2)
+          gh release create "v$version" dist/tlauncher.exe dist/tlauncher-linux --title "Tlauncher $version" --notes ""
+        env:
+          GH_TOKEN: ${{ github.token }}
