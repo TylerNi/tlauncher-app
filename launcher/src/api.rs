@@ -1,10 +1,23 @@
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
+
+use crate::os;
 
 pub const SERVER: &str = "https://jeux.srvnt.ca";
+pub const INVALID: &str = "Code d'accès invalide";
+pub const BLOCKED: &str = "Accès bloqué : trop d'essais avec un mauvais code";
+
+pub static CODE: Mutex<String> = Mutex::new(String::new());
+
+static DEVICE: LazyLock<String> = LazyLock::new(|| {
+    os::machine_id()
+        .map(|id| hex::encode(Sha256::digest(format!("tlauncher:{id}"))))
+        .unwrap_or_default()
+});
 
 pub static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
     ureq::Agent::config_builder()
@@ -19,11 +32,20 @@ pub const PLATFORM: &str = "Windows";
 #[cfg(not(windows))]
 pub const PLATFORM: &str = "Linux";
 
-fn error(e: ureq::Error) -> String {
+pub fn error(e: ureq::Error) -> String {
     match e {
+        ureq::Error::StatusCode(401) => INVALID.into(),
+        ureq::Error::StatusCode(403) => BLOCKED.into(),
         ureq::Error::StatusCode(c) => format!("Erreur du serveur ({c})"),
         e => format!("Connexion impossible ({e})"),
     }
+}
+
+pub fn request(url: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+    AGENT
+        .get(url)
+        .header("X-Tlauncher-Code", CODE.lock().unwrap().as_str())
+        .header("X-Tlauncher-Device", DEVICE.as_str())
 }
 
 #[derive(Deserialize, Clone)]
@@ -71,7 +93,7 @@ pub fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
 }
 
 pub fn open(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
-    AGENT.get(url).call().map_err(error)
+    request(url).call().map_err(error)
 }
 
 pub fn games() -> Result<Vec<Game>, String> {

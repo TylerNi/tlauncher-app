@@ -160,7 +160,7 @@ fn stop(e: ureq::Error) -> Stop {
     match e {
         ureq::Error::StatusCode(416) => Stop::Corrupt,
         ureq::Error::StatusCode(c) if c != 408 && c != 429 && c < 500 => {
-            Stop::Fatal(format!("Erreur du serveur ({c})"))
+            Stop::Fatal(api::error(ureq::Error::StatusCode(c)))
         }
         _ => Stop::Network,
     }
@@ -413,7 +413,7 @@ fn fetch(target: &Target, job: &Job, part: &mut Part, progress: &Progress) -> Re
         return Ok(());
     };
     if part.offset < job.length {
-        let mut request = api::AGENT.get(&format!(
+        let mut request = api::request(&format!(
             "{}content/{}/{version}/{id}",
             target.depot, target.game_id
         ));
@@ -514,8 +514,7 @@ fn fetch(target: &Target, job: &Job, part: &mut Part, progress: &Progress) -> Re
 }
 
 fn pad(job: &Job, part: &mut Part, progress: &Progress) -> Result<(), Stop> {
-    let response = api::AGENT
-        .get(&format!("{}/pad.bin", api::SERVER))
+    let response = api::request(&format!("{}/pad.bin", api::SERVER))
         .header("Range", format!("bytes={}-{}", part.offset, job.length - 1))
         .call();
     let mut response = match response {

@@ -16,6 +16,38 @@ pub fn data_dir() -> PathBuf {
 }
 
 #[cfg(windows)]
+pub fn machine_id() -> Option<String> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
+    };
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let key = wide("SOFTWARE\\Microsoft\\Cryptography");
+    let name = wide("MachineGuid");
+    let mut buffer = [0u16; 128];
+    let mut size = (buffer.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    let length = (size as usize / 2).saturating_sub(1);
+    (status == 0 && length > 0).then(|| String::from_utf16_lossy(&buffer[..length]))
+}
+
+#[cfg(not(windows))]
+pub fn machine_id() -> Option<String> {
+    let id = std::fs::read_to_string("/etc/machine-id").ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+#[cfg(windows)]
 pub fn pick_folder(start: &Path) -> Option<PathBuf> {
     let out = Command::new(env::current_exe().ok()?)
         .arg("--pick-folder")

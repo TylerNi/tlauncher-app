@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::{Align, Color32, ColorImage, Image, Layout, ProgressBar, RichText, TextureHandle, vec2};
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,7 @@ enum Launcher {
 }
 
 enum Screen {
+    Code,
     Loading,
     Ready,
 }
@@ -45,6 +46,7 @@ enum Screen {
 struct State {
     root: Option<PathBuf>,
     installed: HashMap<String, Installed>,
+    code: Option<String>,
 }
 
 impl State {
@@ -83,6 +85,7 @@ struct Shared {
 }
 
 enum Action {
+    Code,
     Folder,
     Install(Game),
     Pause(String),
@@ -92,12 +95,34 @@ enum Action {
     Restart(PathBuf),
 }
 
+fn forget(s: &mut Shared) {
+    api::CODE.lock().unwrap().clear();
+    s.state.code = None;
+    s.state.save();
+    s.screen = Screen::Code;
+}
+
 fn load(shared: &Mutex<Shared>, ctx: &egui::Context) {
     let result = api::games();
     let installed: Vec<String> = {
         let mut s = shared.lock().unwrap();
         match result {
-            Ok(games) => s.games = games,
+            Ok(games) => {
+                s.games = games;
+                let code = api::CODE.lock().unwrap().clone();
+                if s.state.code.as_deref() != Some(code.as_str()) {
+                    s.state.code = Some(code);
+                    s.state.save();
+                }
+            }
+            Err(e) if e == api::INVALID || e == api::BLOCKED => {
+                if e == api::INVALID {
+                    forget(&mut s);
+                }
+                s.screen = Screen::Code;
+                s.error = Some(e);
+                return;
+            }
             Err(e) => {
                 s.error = Some(e);
                 s.games = s
@@ -178,6 +203,8 @@ pub struct App {
     textures: HashMap<String, TextureHandle>,
     confirm: Option<String>,
     height: f32,
+    code: String,
+    wait: Option<Instant>,
 }
 
 impl App {
@@ -192,13 +219,18 @@ impl App {
         }
         ctx.set_fonts(fonts);
         ctx.global_style_mut(|style| style.spacing.button_padding = vec2(12.0, 6.0));
-        let state = fs::read(os::data_dir().join("state.json"))
+        let state: State = fs::read(os::data_dir().join("state.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        *api::CODE.lock().unwrap() = state.code.clone().unwrap_or_default();
         let app = App {
             shared: Arc::new(Mutex::new(Shared {
-                screen: Screen::Loading,
+                screen: if state.code.is_some() {
+                    Screen::Loading
+                } else {
+                    Screen::Code
+                },
                 error: None,
                 games: Vec::new(),
                 latest: HashMap::new(),
@@ -212,6 +244,8 @@ impl App {
             textures: HashMap::new(),
             confirm: None,
             height: 0.0,
+            code: String::new(),
+            wait: None,
         };
         app.boot();
         app
@@ -227,8 +261,10 @@ impl App {
     }
 
     fn boot(&self) {
-        let ctx = self.ctx.clone();
-        self.spawn(move |shared| load(shared, &ctx));
+        if !api::CODE.lock().unwrap().is_empty() {
+            let ctx = self.ctx.clone();
+            self.spawn(move |shared| load(shared, &ctx));
+        }
         self.spawn(|shared| {
             let launcher = match update::run() {
                 Ok(Some(exe)) => Launcher::Ready(exe),
@@ -241,6 +277,27 @@ impl App {
 
     fn act(&mut self, action: Action) {
         match action {
+            Action::Code => {
+                *api::CODE.lock().unwrap() = self
+                    .code
+                    .chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .collect::<String>()
+                    .to_uppercase();
+                self.wait = Some(Instant::now());
+                {
+                    let mut s = self.shared.lock().unwrap();
+                    s.error = None;
+                    s.screen = Screen::Loading;
+                }
+                let ctx = self.ctx.clone();
+                self.spawn(move |shared| load(shared, &ctx));
+                let ctx = self.ctx.clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_secs(5));
+                    ctx.request_repaint();
+                });
+            }
             Action::Folder => self.spawn(|shared| {
                 let start = shared.lock().unwrap().state.root();
                 let _ = fs::create_dir_all(&start);
@@ -301,7 +358,12 @@ impl App {
                             s.latest.insert(game.id, version);
                             s.state.save();
                         }
-                        Err(e) => s.error = Some(e),
+                        Err(e) => {
+                            if e == api::INVALID {
+                                forget(&mut s);
+                            }
+                            s.error = Some(e);
+                        }
                     }
                 });
             }
@@ -327,13 +389,22 @@ impl App {
                     return;
                 };
                 self.spawn(move |shared| {
-                    if install::refresh_launch(&id, &mut installed).is_ok() {
-                        let mut s = shared.lock().unwrap();
-                        if let Some(stored) = s.state.installed.get_mut(&id) {
-                            stored.command = installed.command.clone();
-                            stored.umu = installed.umu.clone();
-                            s.state.save();
+                    match install::refresh_launch(&id, &mut installed) {
+                        Ok(()) => {
+                            let mut s = shared.lock().unwrap();
+                            if let Some(stored) = s.state.installed.get_mut(&id) {
+                                stored.command = installed.command.clone();
+                                stored.umu = installed.umu.clone();
+                                s.state.save();
+                            }
                         }
+                        Err(e) if e == api::INVALID => {
+                            let mut s = shared.lock().unwrap();
+                            forget(&mut s);
+                            s.error = Some(e);
+                            return;
+                        }
+                        Err(_) => {}
                     }
                     if let Err(e) = install::play(&id, &installed) {
                         shared.lock().unwrap().error = Some(e);
@@ -377,6 +448,28 @@ impl egui_software_backend::App for App {
                 ui.add_space(8.0);
             }
             match s.screen {
+                Screen::Code => {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(32.0);
+                        ui.heading(RichText::new("Tlauncher").strong());
+                        ui.add_space(16.0);
+                        ui.label("Code d'accès");
+                        let field =
+                            ui.add(egui::TextEdit::singleline(&mut self.code).desired_width(220.0));
+                        let ready = !self.code.trim().is_empty()
+                            && self
+                                .wait
+                                .is_none_or(|t| t.elapsed() >= Duration::from_secs(5));
+                        let enter =
+                            field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        ui.add_space(8.0);
+                        if (ui.add_enabled(ready, button("Valider", BLUE)).clicked() || enter)
+                            && ready
+                        {
+                            action = Some(Action::Code);
+                        }
+                    });
+                }
                 Screen::Loading => {
                     ui.centered_and_justified(|ui| ui.spinner());
                 }
