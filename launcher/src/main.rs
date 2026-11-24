@@ -32,6 +32,8 @@ fn main() {
     if let Ok(lock) = &lock
         && let Err(std::fs::TryLockError::WouldBlock) = lock.try_lock()
     {
+        #[cfg(windows)]
+        os::focus_window();
         return;
     }
     update::cleanup();

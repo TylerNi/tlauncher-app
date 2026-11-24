@@ -119,3 +119,20 @@ pub fn pick_folder(start: &Path) -> Option<PathBuf> {
     }
     None
 }
+
+#[cfg(windows)]
+pub fn focus_window() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    };
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let class = wide("Window Class");
+    let title = wide("Tlauncher");
+    unsafe {
+        let window = FindWindowW(class.as_ptr(), title.as_ptr());
+        if IsIconic(window) != 0 {
+            ShowWindow(window, SW_RESTORE);
+        }
+        SetForegroundWindow(window);
+    }
+}
