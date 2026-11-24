@@ -19,6 +19,11 @@ fn main() {
         os::folder_dialog(std::path::Path::new(&start));
         return;
     }
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--quit") {
+        os::quit();
+        return;
+    }
     let _ = std::fs::create_dir_all(os::data_dir());
     let lock = std::fs::OpenOptions::new()
         .write(true)
@@ -36,6 +41,8 @@ fn main() {
             return;
         }
     }
+    #[cfg(not(windows))]
+    os::install();
     update::cleanup();
     let icon = image::load_from_memory(include_bytes!("../assets/icon.png"))
         .unwrap()

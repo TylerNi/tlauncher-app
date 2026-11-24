@@ -105,6 +105,48 @@ pub fn focus_window() {
 }
 
 #[cfg(windows)]
+pub fn quit() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let class = wide("Window Class");
+    let title = wide("Tlauncher");
+    unsafe {
+        let window = FindWindowW(class.as_ptr(), title.as_ptr());
+        if !window.is_null() {
+            PostMessageW(window, WM_CLOSE, 0, 0);
+        }
+    }
+    if let Ok(lock) = std::fs::File::open(data_dir().join("lock")) {
+        let _ = lock.lock();
+    }
+}
+
+#[cfg(not(windows))]
+pub fn install() {
+    let target = data_dir().join("tlauncher");
+    let Ok(exe) = env::current_exe() else {
+        return;
+    };
+    if std::fs::canonicalize(&target).is_ok_and(|t| t == exe)
+        || env::args().any(|a| a == "--restart")
+    {
+        return;
+    }
+    let new = target.with_extension("new");
+    if std::fs::copy(&exe, &new).is_ok() {
+        let _ = std::fs::rename(&new, &target);
+    }
+    if Command::new(&target)
+        .args(env::args_os().skip(1))
+        .arg("--restart")
+        .spawn()
+        .is_ok()
+    {
+        std::process::exit(0);
+    }
+}
+
+#[cfg(windows)]
 pub fn shortcut() {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
