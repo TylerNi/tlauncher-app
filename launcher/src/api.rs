@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::os;
 
-pub const SERVER: &str = "https://jeux.srvnt.ca";
+pub const SERVER: &str = "https://tlauncher.srvnt.ca";
 pub const INVALID: &str = "Code d'accès invalide";
 pub const BLOCKED: &str = "Accès bloqué : trop d'essais avec un mauvais code";
 
